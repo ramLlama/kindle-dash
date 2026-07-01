@@ -14,7 +14,9 @@ export DOCKER_DEFAULT_PLATFORM := linux/amd64
 #
 # globals
 #
-VERSION := v1.0.0-beta.4
+GIT_SHA := $(shell git rev-parse --short HEAD)
+GIT_DIRTY := $(if $(shell git status --porcelain),-dirty,)
+VERSION := v0.1.0-${GIT_SHA}${GIT_DIRTY}
 SRC_FILES := $(shell find src -name '*.sh' -o -name '*.png')
 NEXT_WAKEUP_SRC_FILES := $(shell find src/next-wakeup/src -name '*.rs')
 TARGET_FILES := $(SRC_FILES:src/%=dist/%)
