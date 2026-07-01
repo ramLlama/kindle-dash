@@ -10,6 +10,8 @@ export CARGO_PROFILE_RELEASE_STRIP := true
 # The cross-rs images only publish amd64 manifests; tell Docker explicitly so it
 # doesn't warn about a host/image platform mismatch on Apple Silicon.
 export DOCKER_DEFAULT_PLATFORM := linux/amd64
+# Stop macOS tar from writing AppleDouble (._*) sidecar files into the tarball.
+export COPYFILE_DISABLE := 1
 
 #
 # globals
@@ -24,7 +26,7 @@ TARGET_FILES := $(SRC_FILES:src/%=dist/%)
 dist: dist/next-wakeup dist/xh dist/local/state ${TARGET_FILES}
 
 tarball: dist
-	tar -C dist -cvzf kindle-dash-${VERSION}.tgz ./
+	tar -C dist --zstd -cvf kindle-dash-${VERSION}.tar.zst ./
 
 dist/%: src/%
 	@echo "Copying $<"
