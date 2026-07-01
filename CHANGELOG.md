@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Rewrote the on-device code as a single Rust binary.** All shell scripts (`dash.sh`,
+  `start.sh`, `stop.sh`, `wait-for-wifi.sh`, and the `local/` hooks) and the separate
+  `next-wakeup` helper are folded into one `kindle-dash` binary.
+- **Dropped the bundled `xh` HTTP client.** HTTPS is now handled in-process via rustls
+  (ring), removing the ~8.6 MB bundled binary and its build-time git clone.
+- **Configuration moved from `local/env.sh` to a `config.toml` file** read next to the
+  binary. The image URL replaces the `fetch-dashboard.sh` hook; the low-battery shell
+  hook is replaced by an optional rate-limited webhook.
+- Refresh cadence is now consistent: exactly `full_display_refresh_rate` partial
+  refreshes between full refreshes (the old script did one fewer after the first cycle).
+
+### Added
+
+- **Power-button escape hatch:** pressing the power button breaks the loop, restarts the
+  UI framework, and returns to the Kindle Home UI. `SIGTERM`/`SIGINT` do the same. The
+  wake source is detected by comparing the `max77696-onkey_press` count in
+  `/proc/interrupts` across the suspend (this firmware exposes no wake-reason property).
+- **Kindle Voyage support**, verified on-device: serial via `com.lab126.system usid`
+  (falling back to `/proc/cpuinfo`), battery via `com.lab126.powerd battLevel`, UI via the
+  `framework` upstart job, and RTC wake via both `rtc0`/`rtc1` `wakealarm` nodes.
+- **Supported-device allowlist:** the binary detects the model from its serial number and
+  refuses to run on unverified devices (override with `KINDLE_DEVICE=voyage`).
+- Logs are written to a file (configurable) and stdout/stderr are redirected there, so
+  output never corrupts the e-ink framebuffer.
+
+### Removed
+
+- The `docs/screenshotter/` Puppeteer reference and all image-production tooling; image
+  rendering is fully out of scope for this repo.
+
 ## [v1.0.0-beta.4] - 2022-07-27
 
 ### Changed

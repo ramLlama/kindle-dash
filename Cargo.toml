@@ -1,0 +1,46 @@
+[package]
+name = "kindle-dash"
+version = "0.2.0"
+authors = [
+  "Pascal Widdershoven <hello@pascalw.me>",
+  "Ram Raghunathan <ram@llama.is>",
+]
+edition = "2024"
+license = "MIT"
+description = "Low-power Kindle Voyage dashboard: fetch a PNG over HTTPS, render it via eips, and suspend to RAM between refreshes."
+
+[[bin]]
+name = "kindle-dash"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+chrono-tz = "0.10"
+cron-parser = "0.11"
+ctrlc = { version = "3", features = ["termination"] }
+log = "0.4"
+# simplelog backs the `log` facade with a synchronous logger we can point at a file,
+# a discard sink, or stdout/stderr. `default-features = false` drops the TermLogger
+# color deps (termcolor); timestamps are UTC (no `local-offset` timezone detection).
+simplelog = { version = "0.12", default-features = false }
+# Required by simplelog's re-exported `format_description!` macro, which expands to
+# `::time::` paths in our code.
+time = { version = "0.3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+# rustls TLS with the `ring` crypto provider (a Rust+asm BoringSSL fork supplying
+# the underlying primitives). ring cross-compiles cleanly to the musl ARM target,
+# unlike aws-lc-rs which needs a C toolchain; it's the same stack the previously-
+# bundled `xh` used. `native-tls` is avoided on purpose: the Kindle's system
+# OpenSSL is too old for modern HTTPS.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+
+[profile.release]
+strip = true
+lto = true
+# Device teardown depends on unwinding: fatal paths `panic!` and rely on RAII `Drop` guards
+# (see `DeviceRestore` in main.rs) to restart the UI framework and return Home. Do NOT switch
+# to `panic = "abort"` for size — it skips `Drop`, leaving the Kindle's UI stopped until reboot.
+panic = "unwind"

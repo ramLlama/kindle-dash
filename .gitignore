@@ -1,3 +1,9 @@
+/target
 /dist
 /kindle-dash-*.tar.zst
 /tmp
+
+# Local Claude state; the project context (.claude/CLAUDE.md) is committed, the rest is not.
+/.claude/progress.md
+/.claude/scheduled_tasks.lock
+/.claude/agent-memory/

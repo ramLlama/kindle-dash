@@ -2,9 +2,9 @@
 <extension>
 	<information>
 		<name>Kindle dashboard</name>
-		<id>pascalw-kindle-dash</id>
+		<id>ramllama-kindle-dash</id>
 	</information>
 	<menus>
-		<menu type="json" dynamic="true">menu.json</menu>
+		<menu type="json" dynamic="false">menu.json</menu>
 	</menus>
 </extension>

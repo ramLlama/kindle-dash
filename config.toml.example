@@ -1,0 +1,59 @@
+# kindle-dash configuration.
+#
+# Copy this file to `config.toml` next to the `kindle-dash` binary and edit it.
+# `config.toml` is what the binary reads at startup; keeping your real config under a
+# different name means upgrades (which ship `config.toml.example`) won't clobber it.
+
+# Source of the dashboard image. Must be a grayscale PNG sized for the Kindle Voyage's
+# 1072x1448 display. Rendering/optimizing the image is out of scope for this tool;
+# produce it however you like. Accepts an `http(s)://` URL, or a `file:///abs/path` for
+# a local image (handy for testing — point it at the bundled test PNG):
+#   image_url = "file:///mnt/us/kindle-dash/assets/1448x1072/test-dashboard.png"
+image_url = "https://example.com/dashboard.png"
+
+# When to refresh, as a cron expression interpreted in `timezone`. The example refreshes
+# every 5 minutes from 06:00 to 22:00, every day.
+refresh_schedule = "*/5 6-21 * * *"
+
+# IANA timezone name used to interpret `refresh_schedule`.
+timezone = "America/New_York"
+
+# Do a full (flashing) e-ink refresh after this many fast partial refreshes, to clear
+# ghosting. Defaults to 0, i.e. every refresh is a full one — fine at our low refresh
+# rate. Raise it to use faster partial refreshes between full ones.
+# full_display_refresh_rate = 0
+
+# When the next scheduled wakeup is at least this many seconds away, show the sleep
+# screen instead of fetching a fresh dashboard (useful when your schedule only runs
+# during the day).
+sleep_screen_interval = 3600
+
+# How long (seconds) to keep retrying the image fetch, waiting for Wi-Fi to reconnect
+# after waking, before giving up on this cycle.
+wifi_timeout_secs = 30
+
+# Delay (seconds) before each suspend. Leaves a window to abort a freshly-launched
+# process (e.g. over SSH) before the device drops to sleep.
+pre_suspend_delay_secs = 10
+
+# At or below this battery percentage, stop refreshing and show the low-battery screen
+# (assets/<resolution>/low-battery.png) to preserve charge. Defaults to 10.
+# low_battery_pct = 10
+
+# While in low-battery mode, suspend this many seconds between battery re-checks. The
+# dashboard resumes normal refreshing on its own once charging lifts the level back above
+# `low_battery_pct`. Defaults to 3600 (one hour).
+# low_battery_sleep_secs = 3600
+
+# Log destination. A file path, or one of "null" (discard), "stdout", "stderr".
+# Defaults to `kindle-dash.log` next to the binary. On the Kindle, "stdout"/"stderr"
+# corrupt the e-ink framebuffer, so use them only for host or over-SSH debugging.
+# log = "/mnt/us/kindle-dash/kindle-dash.log"
+
+# Directory holding the bundled assets (currently just `sleeping.png`). Defaults to
+# `assets/<resolution>` next to the binary — e.g. `assets/1448x1072` on the Voyage.
+# assets_dir = "/mnt/us/kindle-dash/assets/1448x1072"
+
+# Scratch directory for the fetched dashboard image. Defaults to "/tmp", a RAM-backed
+# tmpfs on the Kindle (survives suspend-to-RAM and avoids flash wear).
+# scratch_dir = "/tmp"
