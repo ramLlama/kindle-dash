@@ -1,3 +1,19 @@
+#
+# configurables
+#
+XH_VERSION ?= v0.26.1
+
+#
+# exported envvars
+#
+export CARGO_PROFILE_RELEASE_STRIP := true
+# The cross-rs images only publish amd64 manifests; tell Docker explicitly so it
+# doesn't warn about a host/image platform mismatch on Apple Silicon.
+export DOCKER_DEFAULT_PLATFORM := linux/amd64
+
+#
+# globals
+#
 VERSION := v1.0.0-beta.4
 SRC_FILES := $(shell find src -name '*.sh' -o -name '*.png')
 NEXT_WAKEUP_SRC_FILES := $(shell find src/next-wakeup/src -name '*.rs')
@@ -14,26 +30,24 @@ dist/%: src/%
 	@cp "$<" "$@"
 
 dist/next-wakeup: ${NEXT_WAKEUP_SRC_FILES}
+	@mkdir -p dist
 	cd src/next-wakeup && cross build --release --target arm-unknown-linux-musleabi
 	cp src/next-wakeup/target/arm-unknown-linux-musleabi/release/next-wakeup dist/
 
 dist/xh: tmp/xh
+	@mkdir -p dist
 	cd tmp/xh && cross build --release --target arm-unknown-linux-musleabi
-	docker run --rm \
-		-v $(shell pwd)/tmp/xh:/src \
-		rustembedded/cross:arm-unknown-linux-musleabi-0.2.1 \
-		/usr/local/arm-linux-musleabi/bin/strip /src/target/arm-unknown-linux-musleabi/release/xh
 	cp tmp/xh/target/arm-unknown-linux-musleabi/release/xh dist/
 
 tmp/xh:
 	mkdir -p tmp/
-	git clone --depth 1 --branch v0.16.1 https://github.com/ducaale/xh.git tmp/xh
+	git clone --depth 1 --branch ${XH_VERSION} https://github.com/ducaale/xh.git tmp/xh
 
 dist/local/state:
 	mkdir -p dist/local/state
 
 clean:
-	rm -r dist/*
+	rm -rf dist/* src/next-wakeup/target tmp
 
 watch:
 	watchexec -w src/ -p -- make
