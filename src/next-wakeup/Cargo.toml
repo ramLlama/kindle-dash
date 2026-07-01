@@ -1,7 +1,7 @@
 [package]
 name = "kindle-dash-next-wakeup"
 version = "0.1.0"
-authors = ["Pascal Widdershoven <hello@pascalw.me>"]
+authors = ["Pascal Widdershoven <hello@pascalw.me>", "Ram Raghunathan <ram@llama.is>"]
 edition = "2018"
 
 [dependencies]
