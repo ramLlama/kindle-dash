@@ -60,9 +60,10 @@ config.toml.example  Documented config template.
   clear ghosting. Default `0` means every refresh is full (fine at low cadence). The first frame
   after any long sleep is forced full.
 - **Wake-source detection**: there is no readable powerd wake-reason property on this firmware.
-  The loop snapshots the `max77696-onkey_press` interrupt count from `/proc/interrupts` before
-  suspend and compares after resume; a strict increase means the power button woke us (→ exit to
-  Home), otherwise it was the RTC alarm (→ keep looping).
+  `suspend_for` snapshots the `max77696-onkey_press` interrupt count from `/proc/interrupts` at
+  entry and compares it after resuming; a strict increase means the power button woke us (→ exit to
+  Home), otherwise it was the RTC alarm (→ keep looping). During awake sleeps it polls the same
+  count every second, so a button press interrupts those too, not just real suspends.
 - **DeviceRestore RAII guard**: engaging it stops the UI `framework`, sets the CPU governor to
   `powersave`, and suppresses the screensaver. Its `Drop` restores the governor, restarts
   `framework`, waits 5s, and launches Home. See gotcha below on why this must run.
@@ -72,10 +73,16 @@ config.toml.example  Documented config template.
 The central design rule: **business logic (`main.rs`) never names a sysfs path, `eips`, or a
 `lipc` call directly.** Everything device-specific lives behind methods on `enum Device` in
 `src/device/` (`resolution`, `battery_percent`, `render_dashboard`/`render_sleeping`/
-`render_low_battery`, `suspend_for`, `power_button_irq_count`, `stop_framework`/`start_framework`,
+`render_low_battery`, `suspend_for`, `stop_framework`/`start_framework`,
 `read_cpu_governor`/`set_cpu_governor`, `prevent_screensaver`, `launch_home`). `main.rs` speaks
 only in these terms. Adding a new Kindle model means adding an `enum` variant and its match arms,
 not touching business logic.
+
+`suspend_for(secs: i64, sleep_only: bool, shutdown: &AtomicBool) -> Result<WakeReason>` is the
+single sleep/suspend entrypoint for the loop — it owns the awake abort window, the awake-vs-suspend
+decision, and wake-source detection, returning `WakeReason { Timer, PowerButton, Signal }` (a `pub`
+enum re-exported from `device/mod.rs`) so the loop knows why the wait ended. Power-button IRQ
+counting is now a private detail of `power.rs`, not part of the `Device` API.
 
 **Voyage is the only supported model.** Detection (`device::detect`) reads the serial and matches
 it against an allowlist of Voyage device codes; anything else hard-errors *before* any device
@@ -97,7 +104,7 @@ default log file, and a post-init one routing panics through `log::error!` with 
 
 All commands assume Docker is running (for `cross`).
 
-- **Test:** `make test` (`cargo test`) — host-side unit tests, ~28 of them.
+- **Test:** `make test` (`cargo test`) — host-side unit tests, 34 of them.
 - **Lint:** `make lint` (`cargo clippy --all-targets`). CI treats warnings as errors; run
   `cargo clippy --all-targets -- -D warnings` before committing.
 - **Format:** `make format` (`cargo fmt`).
@@ -151,6 +158,14 @@ uses `dynamic="false"`.
   time (both are the max77696 PMIC RTC and are wall-clock synced; `rtc0` is `hctosys`). `rtc2`
   (SoC snvs) is **not** wall-clock synced — do not use it. The code arms both rtc0/rtc1 as a hedge
   because the exact suspend-wake node can't be verified without actually suspending.
+- **Never arm the RTC only a few seconds before suspending.** A wakealarm armed ~1s before writing
+  `mem` to `/sys/power/state` can fire while the kernel is still *entering* suspend; the one-shot
+  alarm is consumed before the transition completes and the device sleeps with no wake source left
+  — an infinite sleep, observed on hardware. It surfaced when a refresh slot boundary passed during
+  frame servicing, making the computed sleep negative (old code clamped it to 1s). `suspend_for`
+  closes this by construction: waits below `MIN_SUSPEND_SECS` (30s) stay awake instead of
+  suspending, and real suspends fix the wake instant at entry then burn a 10s awake abort window
+  first, so the RTC is always armed ≥ ~20s ahead of suspend entry.
 - **Never emit to stdout/stderr on-device** — it corrupts the e-ink framebuffer. The `stdout`/
   `stderr` log sinks are for host or over-SSH debugging only.
 - **`/tmp` is a RAM-backed tmpfs** (`/var`, 64 MB) that survives suspend-to-RAM; it's the default
@@ -180,9 +195,11 @@ See `~/.claude/.../memory/voyage-lipc-reference.md` for the fuller verified LIPC
 
 `cargo test` runs host-side unit tests for the pure logic only: config parse/validate, cron
 scheduling, fetch error classification + `file://` handling + PNG validation, `/proc/interrupts`
-IRQ parsing, battery string parsing, and the RefreshCycle cadence. The suspend, render (`eips`),
-framework-control, and real-fetch-over-Wi-Fi paths **cannot be unit-tested** and must be validated
-on hardware (cable unplugged for suspend; `DEBUG=true` over SSH for fetch/render).
+IRQ parsing, battery string parsing, the RefreshCycle cadence, and `suspend_for`'s host-safe guard
+paths (a non-positive wait returns `Timer` without suspending; a pre-set shutdown flag interrupts
+the wait). The actual suspend-to-RAM, render (`eips`), framework-control, and
+real-fetch-over-Wi-Fi paths **cannot be unit-tested** and must be validated on hardware (cable
+unplugged for suspend; `DEBUG=true` over SSH for fetch/render).
 
 ## Conventions
 

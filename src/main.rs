@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use config::Config;
-use device::{Device, RefreshCycle};
+use device::{Device, RefreshCycle, WakeReason};
 
 /// Why the main loop stopped.
 enum ExitReason {
@@ -172,10 +172,10 @@ fn main_loop(
         }
         let low_battery = matches!(battery, Some(level) if level <= config.low_battery_pct);
 
-        // Absolute instant of the next scheduled refresh. Servicing a frame (fetch + render +
-        // abort window) takes many seconds, which can cross a slot boundary, so we pin the
-        // target once here and have both the sleep-screen decision below and the suspend
-        // duration further down derive from it. The suspend recomputes only the *remaining*
+        // Absolute instant of the next scheduled refresh. Servicing a frame (fetch +
+        // render) takes many seconds, which can cross a slot boundary, so we pin the
+        // target once here and have both the sleep-screen decision below and the sleep
+        // duration further down derive from it. The sleep recomputes only the *remaining*
         // time to this fixed instant, which naturally subtracts the servicing time.
         let target = schedule::next_refresh_at(&config.refresh_schedule, tz)
             .unwrap_or_else(|e| panic!("computing next wakeup: {e:#}"));
@@ -207,63 +207,25 @@ fn main_loop(
             }
         }
 
-        // Abort window: allow a freshly-launched process to be killed before it suspends.
-        interruptible_sleep(config.pre_suspend_delay_secs, shutdown);
-        if shutdown.load(Ordering::SeqCst) {
-            return ExitReason::Signal;
-        }
-
-        // Snapshot the power-button interrupt count so we can tell, after resuming, whether
-        // the button (vs the RTC alarm) woke us.
-        let pwr_before = device.power_button_irq_count();
-
-        // In low-battery mode sleep a fixed long interval before re-checking; otherwise sleep
-        // until the same `target` instant the render decision used, so the seconds spent
-        // fetching, rendering, and in the abort window above are subtracted from the sleep.
+        // In low-battery mode sleep a fixed long interval before re-checking; otherwise
+        // sleep until the same `target` instant the render decision used, so the seconds
+        // spent fetching and rendering are subtracted from the sleep. `suspend_for` owns
+        // the whole wait: awake sleep vs real suspend, the pre-suspend abort window, and
+        // wake-source detection.
         let sleep_secs = if low_battery {
             config.low_battery_sleep_secs
         } else {
             target.signed_duration_since(Utc::now()).num_seconds()
         };
-        if debug {
-            // No real suspend in debug mode: sleep instead, but stay responsive to a signal
-            // (Ctrl-C/kill) so the loop can be aborted while watching it on-device.
-            log::info!("[debug] would suspend for {sleep_secs}s; sleeping instead");
-            interruptible_sleep(sleep_secs.max(0) as u64, shutdown);
-            if shutdown.load(Ordering::SeqCst) {
-                return ExitReason::Signal;
+        match device.suspend_for(sleep_secs, debug, shutdown) {
+            Ok(WakeReason::Timer) => log::info!("woke via timer"),
+            Ok(WakeReason::PowerButton) => {
+                log::info!("woke via power button");
+                return ExitReason::PowerButton;
             }
-        } else {
-            log::info!("suspending for {sleep_secs}s");
-            device
-                .suspend_for(sleep_secs)
-                .unwrap_or_else(|e| panic!("suspend failed: {e:#}"));
+            Ok(WakeReason::Signal) => return ExitReason::Signal,
+            Err(e) => panic!("suspend failed: {e:#}"),
         }
-
-        // Resumed — figure out why we woke. The button woke us only if its interrupt count
-        // strictly increased across the suspend; unknown counts (None) count as an RTC wake,
-        // so the loop keeps running and re-arms the RTC.
-        let pwr_after = device.power_button_irq_count();
-        if matches!((pwr_before, pwr_after), (Some(b), Some(a)) if a > b) {
-            log::info!("woke via power button");
-            return ExitReason::PowerButton;
-        }
-        log::info!("woke via RTC alarm");
-    }
-}
-
-/// Sleep up to `secs`, waking every `POLL_INTERVAL_SECS` to check the shutdown flag so a
-/// signal is honored within that interval without busy-polling.
-fn interruptible_sleep(secs: u64, shutdown: &AtomicBool) {
-    const POLL_INTERVAL_SECS: u64 = 5;
-    let mut remaining = secs;
-    while remaining > 0 {
-        if shutdown.load(Ordering::SeqCst) {
-            return;
-        }
-        let chunk = remaining.min(POLL_INTERVAL_SECS);
-        std::thread::sleep(Duration::from_secs(chunk));
-        remaining -= chunk;
     }
 }
 

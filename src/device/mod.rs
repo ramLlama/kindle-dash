@@ -10,6 +10,7 @@ mod power;
 mod sys;
 
 pub use display::RefreshCycle;
+pub use power::WakeReason;
 
 use anyhow::{Context, Result, bail};
 

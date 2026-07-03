@@ -32,10 +32,6 @@ sleep_screen_interval = 3600
 # after waking, before giving up on this cycle.
 wifi_timeout_secs = 30
 
-# Delay (seconds) before each suspend. Leaves a window to abort a freshly-launched
-# process (e.g. over SSH) before the device drops to sleep.
-pre_suspend_delay_secs = 10
-
 # At or below this battery percentage, stop refreshing and show the low-battery screen
 # (assets/<resolution>/low-battery.png) to preserve charge. Defaults to 10.
 # low_battery_pct = 10

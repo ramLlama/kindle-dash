@@ -28,9 +28,6 @@ pub struct Config {
     /// How long to keep retrying the image fetch (waiting for Wi-Fi) before giving up.
     #[serde(default = "default_wifi_timeout")]
     pub wifi_timeout_secs: u64,
-    /// Delay before each suspend, leaving a window to abort a freshly-launched process.
-    #[serde(default = "default_pre_suspend_delay")]
-    pub pre_suspend_delay_secs: u64,
     /// Battery percentage at or below which the dashboard stops refreshing and shows a
     /// low-battery screen, to preserve charge.
     #[serde(default = "default_low_battery_pct")]
@@ -64,9 +61,6 @@ fn default_sleep_screen_interval() -> i64 {
 }
 fn default_wifi_timeout() -> u64 {
     30
-}
-fn default_pre_suspend_delay() -> u64 {
-    10
 }
 fn default_low_battery_pct() -> u8 {
     10
