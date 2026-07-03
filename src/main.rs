@@ -9,6 +9,7 @@ mod logging;
 mod schedule;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,10 +172,14 @@ fn main_loop(
         }
         let low_battery = matches!(battery, Some(level) if level <= config.low_battery_pct);
 
-        // Used only to choose sleep-screen vs. dashboard; the real suspend duration is
-        // recomputed after rendering so fetch/render time isn't counted against the sleep.
-        let next_secs = schedule::next_wakeup_secs(&config.refresh_schedule, tz)
+        // Absolute instant of the next scheduled refresh. Servicing a frame (fetch + render +
+        // abort window) takes many seconds, which can cross a slot boundary, so we pin the
+        // target once here and have both the sleep-screen decision below and the suspend
+        // duration further down derive from it. The suspend recomputes only the *remaining*
+        // time to this fixed instant, which naturally subtracts the servicing time.
+        let target = schedule::next_refresh_at(&config.refresh_schedule, tz)
             .unwrap_or_else(|e| panic!("computing next wakeup: {e:#}"));
+        let next_secs = target.signed_duration_since(Utc::now()).num_seconds();
 
         if low_battery {
             // Low battery overrides the schedule: stop fetching/refreshing to preserve charge,
@@ -212,14 +217,13 @@ fn main_loop(
         // the button (vs the RTC alarm) woke us.
         let pwr_before = device.power_button_irq_count();
 
-        // In low-battery mode sleep a fixed long interval before re-checking; otherwise
-        // recompute now, right before suspending, so the seconds spent fetching, rendering,
-        // and in the abort window above are subtracted from the sleep.
+        // In low-battery mode sleep a fixed long interval before re-checking; otherwise sleep
+        // until the same `target` instant the render decision used, so the seconds spent
+        // fetching, rendering, and in the abort window above are subtracted from the sleep.
         let sleep_secs = if low_battery {
             config.low_battery_sleep_secs
         } else {
-            schedule::next_wakeup_secs(&config.refresh_schedule, tz)
-                .unwrap_or_else(|e| panic!("computing next wakeup: {e:#}"))
+            target.signed_duration_since(Utc::now()).num_seconds()
         };
         if debug {
             // No real suspend in debug mode: sleep instead, but stay responsive to a signal
