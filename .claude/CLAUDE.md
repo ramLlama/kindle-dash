@@ -165,7 +165,9 @@ uses `dynamic="false"`.
   frame servicing, making the computed sleep negative (old code clamped it to 1s). `suspend_for`
   closes this by construction: waits below `MIN_SUSPEND_SECS` (30s) stay awake instead of
   suspending, and real suspends fix the wake instant at entry then burn a 10s awake abort window
-  first, so the RTC is always armed ≥ ~20s ahead of suspend entry.
+  first, nominally leaving ~20s. Because sleeps are *at least* their duration, the window can
+  oversleep; the remaining time is re-checked after it, and less than `MIN_ACTUAL_SUSPEND_SECS`
+  (10s) left means the rest is slept off awake instead of suspending.
 - **Never emit to stdout/stderr on-device** — it corrupts the e-ink framebuffer. The `stdout`/
   `stderr` log sinks are for host or over-SSH debugging only.
 - **`/tmp` is a RAM-backed tmpfs** (`/var`, 64 MB) that survives suspend-to-RAM; it's the default
