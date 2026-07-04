@@ -19,16 +19,16 @@ const POWER_BUTTON_IRQ_LABEL: &str = "max77696-onkey_press";
 /// serviced (and the one-shot alarm spent) before the transition completes, and the
 /// device sleeps with no wake source left — observed on hardware as an infinite sleep.
 /// Staying awake for short waits sidesteps the race entirely. With the abort window
-/// below, the alarm is nominally armed ~20s ahead of the actual suspend.
-const MIN_SUSPEND_SECS: i64 = 30;
+/// below, the alarm is nominally armed ~35s ahead of the actual suspend.
+const MIN_SUSPEND_SECS: i64 = 45;
 /// Awake window before each real suspend, so a freshly-launched process can be stopped
 /// (e.g. `kill` over SSH, or the power button) before the device drops off the network.
 const SUSPEND_ABORT_WINDOW_SECS: u64 = 10;
-/// Least time that must remain until the wake instant when actually entering suspend.
-/// Sleeping is an *at least* guarantee, so the abort window can oversleep and eat the
-/// margin `MIN_SUSPEND_SECS` nominally leaves; the remainder is re-checked right before
-/// suspending and anything shorter than this is slept off awake instead.
-const MIN_ACTUAL_SUSPEND_SECS: i64 = 10;
+/// Greatest time until the wake instant, once actually entering suspend, that isn't worth
+/// suspending for. Sleeping is an *at least* guarantee, so the abort window can oversleep
+/// and eat the margin `MIN_SUSPEND_SECS` nominally leaves; the remainder is re-checked
+/// right before suspending and anything at or below this is slept off awake instead.
+const MIN_ACTUAL_SUSPEND_SECS: i64 = 30;
 /// Poll cadence for the shutdown flag and power-button count during awake sleeps.
 const POLL_INTERVAL_SECS: u64 = 1;
 
@@ -98,7 +98,7 @@ impl Device {
     ///   frame) returns [`WakeReason::Timer`] immediately so the caller re-plans.
     /// - Otherwise: stay awake for [`SUSPEND_ABORT_WINDOW_SECS`] first, then arm the RTC
     ///   and suspend. The wake instant is fixed at entry, so the window doesn't shift
-    ///   the scheduled wakeup. If the window overslept and left less than
+    ///   the scheduled wakeup. If the window overslept and left at or below
     ///   [`MIN_ACTUAL_SUSPEND_SECS`] until that instant, the rest is slept off awake
     ///   instead of suspending. After resuming, the power-button interrupt count tells a
     ///   button wake from an RTC one (this firmware has no readable wake-reason property).
@@ -131,9 +131,9 @@ impl Device {
         // The abort window sleeps *at least* its duration; re-check what's actually left
         // so an oversleep can't shrink the arm-to-suspend margin into the lost-alarm race.
         let remaining = wake_at - chrono::Utc::now().timestamp();
-        if remaining < MIN_ACTUAL_SUSPEND_SECS {
+        if remaining <= MIN_ACTUAL_SUSPEND_SECS {
             log::info!(
-                "only {remaining}s left after abort window (< {MIN_ACTUAL_SUSPEND_SECS}s); sleeping awake"
+                "only {remaining}s left after abort window (<= {MIN_ACTUAL_SUSPEND_SECS}s); sleeping awake"
             );
             return Ok(self.interruptible_sleep(remaining.max(0) as u64, shutdown, pwr_baseline));
         }
