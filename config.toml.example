@@ -4,12 +4,16 @@
 # `config.toml` is what the binary reads at startup; keeping your real config under a
 # different name means upgrades (which ship `config.toml.example`) won't clobber it.
 
-# Source of the dashboard image. Must be a grayscale PNG sized for the Kindle Voyage's
-# 1072x1448 display. Rendering/optimizing the image is out of scope for this tool;
-# produce it however you like. Accepts an `http(s)://` URL, or a `file:///abs/path` for
-# a local image (handy for testing — point it at the bundled test PNG):
-#   image_url = "file:///mnt/us/kindle-dash/assets/1448x1072/test-dashboard.png"
-image_url = "https://example.com/dashboard.png"
+# Sources of the dashboard image(s), as a list. Each must be a grayscale PNG sized for the
+# Kindle Voyage's 1072x1448 display. Rendering/optimizing the image is out of scope for
+# this tool; produce it however you like. Each entry accepts an `http(s)://` URL, or a
+# `file:///abs/path` for a local image (handy for testing — point it at the bundled test
+# PNG):
+#   image_urls = ["file:///mnt/us/kindle-dash/assets/1448x1072/test-dashboard.png"]
+#
+# A single power-button press cycles to the next URL and renders it, so you can flip
+# through several dashboards by hand; with a single entry the press just refreshes it.
+image_urls = ["https://example.com/dashboard.png"]
 
 # When to refresh, as a cron expression interpreted in `timezone`. The example refreshes
 # every 5 minutes from 06:00 to 22:00, every day.

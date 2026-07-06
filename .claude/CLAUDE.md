@@ -5,9 +5,10 @@
 `kindle-dash` turns a jailbroken **Kindle Voyage** into a low-power e-ink dashboard. A single
 static Rust binary wakes on a cron schedule, fetches a pre-rendered grayscale PNG (over HTTPS or
 from a local `file://` path), draws it to the e-ink panel via the device's `eips` tool, then
-suspends the device to RAM until the next scheduled refresh. A single **power button** press
-wakes the device for an immediate refresh; pressing it several times in a row breaks the loop and
-returns to the native Kindle Home UI.
+suspends the device to RAM until the next scheduled refresh. The config lists one or more image
+URLs; a single **power button** press cycles to the next URL and renders it (with a single URL it
+just refreshes in place), while pressing it several times in a row breaks the loop and returns to
+the native Kindle Home UI.
 
 This is a from-scratch Rust rewrite of an earlier project that was a collection of POSIX shell
 scripts plus a standalone `next-wakeup` helper and a bundled `xh` HTTP client. All of that is
@@ -67,10 +68,11 @@ config.toml.example  Documented config template.
   so a button press interrupts those too, not just real suspends.
 - **Power-button semantics**: once a press is seen (on resume *or* during an awake sleep),
   `classify_button_wake` watches for more with a rolling `WAKE_SETTLE_SECS` (2s) window that each
-  new press resets. A single press → `WakeReason::PowerButtonRefresh` (loop re-renders now, like a
-  timer wake); reaching `EXIT_PRESS_COUNT` (3) presses → `WakeReason::PowerButtonExit` (return to
-  Home). The pre-suspend abort window and awake sleeps share this via `interruptible_sleep`, so the
-  semantics are identical everywhere: one press refreshes, three exit.
+  new press resets. A single press → `WakeReason::PowerButtonCycleImage` (loop advances
+  `image_idx` to the next `config.image_urls` entry, wrapping, and renders it — with one URL this
+  refreshes in place); reaching `EXIT_PRESS_COUNT` (3) presses → `WakeReason::PowerButtonExit`
+  (return to Home). The pre-suspend abort window and awake sleeps share this via
+  `interruptible_sleep`, so the semantics are identical everywhere: one press cycles, three exit.
 - **DeviceRestore RAII guard**: engaging it stops the UI `framework`, sets the CPU governor to
   `powersave`, and suppresses the screensaver. Its `Drop` restores the governor, restarts
   `framework`, waits 5s, and launches Home. See gotcha below on why this must run.
@@ -89,7 +91,7 @@ not touching business logic.
 single sleep/suspend entrypoint for the loop — it owns the awake abort window and delegates the
 final suspend-vs-sleep decision plus the suspend itself to the private `suspend_to_ram` (which
 makes that decision as late as possible, after clearing the RTC, right before `echo mem`). It
-returns `WakeReason { Timer, PowerButtonRefresh, PowerButtonExit, Signal }` (a `pub` enum
+returns `WakeReason { Timer, PowerButtonCycleImage, PowerButtonExit, Signal }` (a `pub` enum
 re-exported from `device/mod.rs`) so the loop knows why the wait ended. Power-button IRQ counting
 and classification are private details of `power.rs`, not part of the `Device` API.
 

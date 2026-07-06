@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// URL of the dashboard PNG to fetch over HTTP(S).
-    pub image_url: String,
+    /// URLs of the dashboard PNGs to fetch over HTTP(S). A single power-button press
+    /// cycles to the next one; with a single entry the press just refreshes it.
+    pub image_urls: Vec<String>,
     /// Cron expression (interpreted in `timezone`) controlling refresh times.
     pub refresh_schedule: String,
     /// IANA timezone name used to interpret `refresh_schedule`.
@@ -84,8 +85,11 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.image_url.trim().is_empty() {
-            bail!("config: image_url must not be empty");
+        if self.image_urls.is_empty() {
+            bail!("config: image_urls must list at least one URL");
+        }
+        if self.image_urls.iter().any(|u| u.trim().is_empty()) {
+            bail!("config: image_urls entries must not be empty");
         }
         self.tz()?;
         schedule::validate(&self.refresh_schedule).context("config: invalid refresh_schedule")?;
@@ -114,7 +118,7 @@ mod tests {
     use super::*;
 
     const MINIMAL: &str = r#"
-        image_url = "https://example.com/dash.png"
+        image_urls = ["https://example.com/dash.png"]
         refresh_schedule = "2,32 8-17 * * MON-FRI"
         timezone = "Europe/Amsterdam"
     "#;
@@ -122,7 +126,7 @@ mod tests {
     #[test]
     fn parses_minimal_config_with_defaults() {
         let c = Config::from_toml(MINIMAL).unwrap();
-        assert_eq!(c.image_url, "https://example.com/dash.png");
+        assert_eq!(c.image_urls, vec!["https://example.com/dash.png"]);
         assert_eq!(c.full_display_refresh_rate, 0);
         assert_eq!(c.sleep_screen_interval, 3600);
         assert_eq!(c.wifi_timeout_secs, 30);
@@ -139,7 +143,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_timezone() {
-        let text = r#"image_url = "https://x/y.png"
+        let text = r#"image_urls = ["https://x/y.png"]
                       refresh_schedule = "* * * * *"
                       timezone = "Mars/Phobos""#;
         assert!(Config::from_toml(text).is_err());
@@ -147,8 +151,35 @@ mod tests {
 
     #[test]
     fn rejects_invalid_schedule() {
-        let text = r#"image_url = "https://x/y.png"
+        let text = r#"image_urls = ["https://x/y.png"]
                       refresh_schedule = "not a cron"
+                      timezone = "UTC""#;
+        assert!(Config::from_toml(text).is_err());
+    }
+
+    #[test]
+    fn parses_multiple_image_urls() {
+        let text = r#"
+            image_urls = ["https://a/1.png", "https://b/2.png"]
+            refresh_schedule = "* * * * *"
+            timezone = "UTC"
+        "#;
+        let c = Config::from_toml(text).unwrap();
+        assert_eq!(c.image_urls, vec!["https://a/1.png", "https://b/2.png"]);
+    }
+
+    #[test]
+    fn rejects_empty_image_urls_list() {
+        let text = r#"image_urls = []
+                      refresh_schedule = "* * * * *"
+                      timezone = "UTC""#;
+        assert!(Config::from_toml(text).is_err());
+    }
+
+    #[test]
+    fn rejects_blank_image_url_entry() {
+        let text = r#"image_urls = ["https://a/1.png", "  "]
+                      refresh_schedule = "* * * * *"
                       timezone = "UTC""#;
         assert!(Config::from_toml(text).is_err());
     }

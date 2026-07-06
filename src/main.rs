@@ -162,6 +162,10 @@ fn main_loop(
     shutdown: &AtomicBool,
     debug: bool,
 ) -> ExitReason {
+    // Index into `config.image_urls`. A single power-button press advances it (wrapping),
+    // so successive presses cycle through the configured dashboards; a timer wake keeps the
+    // current one. With a single URL this stays at 0 and the press just refreshes.
+    let mut image_idx = 0usize;
     loop {
         if shutdown.load(Ordering::SeqCst) {
             return ExitReason::Signal;
@@ -201,8 +205,13 @@ fn main_loop(
             // Ensure the first frame after a long sleep is a clean full refresh.
             cycle.force_full_next();
         } else {
-            log::info!("refreshing dashboard (next wakeup in {next_secs}s)");
-            match fetch::fetch_to(&config.image_url, dash_png, config.wifi_timeout_secs) {
+            let image_url = &config.image_urls[image_idx];
+            log::info!(
+                "refreshing dashboard {}/{} (next wakeup in {next_secs}s): {image_url}",
+                image_idx + 1,
+                config.image_urls.len()
+            );
+            match fetch::fetch_to(image_url, dash_png, config.wifi_timeout_secs) {
                 Ok(()) => device.render_dashboard(dash_png, cycle.next_kind()),
                 Err(e) => log::warn!("not updating screen: {e:#}"),
             }
@@ -220,8 +229,12 @@ fn main_loop(
         };
         match device.suspend_for(sleep_secs, debug, shutdown) {
             Ok(WakeReason::Timer) => log::info!("woke via timer"),
-            // A single press just wakes to re-render; loop around and refresh now.
-            Ok(WakeReason::PowerButtonRefresh) => log::info!("woke via power button: refreshing"),
+            // A single press cycles to the next configured image; loop around and render it
+            // (wraps back to the first, so a single-URL config just refreshes in place).
+            Ok(WakeReason::PowerButtonCycleImage) => {
+                image_idx = (image_idx + 1) % config.image_urls.len();
+                log::info!("woke via power button: cycling to image {}", image_idx + 1);
+            }
             Ok(WakeReason::PowerButtonExit) => {
                 log::info!("woke via power button: exiting");
                 return ExitReason::PowerButton;

@@ -36,7 +36,7 @@ const POLL_INTERVAL_SECS: u64 = 1;
 /// up, so this window is what lets a deliberate double-press register as two.
 const WAKE_SETTLE_SECS: u64 = 2;
 /// Number of power-button presses that means "exit to Home". Fewer than this (i.e. a
-/// single press) means "refresh now" instead.
+/// single press) means "cycle to the next image" instead.
 const EXIT_PRESS_COUNT: u64 = 3;
 
 /// Why a [`Device::suspend_for`] wait ended.
@@ -44,10 +44,11 @@ const EXIT_PRESS_COUNT: u64 = 3;
 pub enum WakeReason {
     /// The requested time elapsed (RTC alarm fired, or an awake sleep ran out).
     Timer,
-    /// A single power-button press: wake and re-render now, but keep the loop running.
-    /// Treated like [`WakeReason::Timer`] by the loop, but distinct so the pre-suspend
-    /// abort window can tell "user wants a refresh" from "the window simply elapsed".
-    PowerButtonRefresh,
+    /// A single power-button press: cycle to the next configured image and render it now,
+    /// keeping the loop running. Distinct from [`WakeReason::Timer`] so the loop knows to
+    /// advance the image and the pre-suspend abort window can tell "user wants the next
+    /// image" from "the window simply elapsed".
+    PowerButtonCycleImage,
     /// The power button was pressed at least [`EXIT_PRESS_COUNT`] times: exit to Home.
     PowerButtonExit,
     /// SIGINT/SIGTERM set the shutdown flag.
@@ -113,7 +114,7 @@ impl Device {
     ///   is fixed at entry, so the window doesn't shift the scheduled wakeup. After
     ///   resuming, the power-button interrupt count tells a button wake from an RTC one
     ///   (this firmware has no readable wake-reason property); a lone press reports
-    ///   [`WakeReason::PowerButtonRefresh`] and [`EXIT_PRESS_COUNT`] or more reports
+    ///   [`WakeReason::PowerButtonCycleImage`] and [`EXIT_PRESS_COUNT`] or more reports
     ///   [`WakeReason::PowerButtonExit`].
     pub fn suspend_for(
         self,
@@ -136,7 +137,7 @@ impl Device {
             return Ok(self.interruptible_sleep(awake_secs, shutdown, pwr_baseline));
         }
 
-        // Awake abort window: a press here (PowerButtonRefresh/Exit) or a signal aborts
+        // Awake abort window: a press here (PowerButtonCycleImage/Exit) or a signal aborts
         // the suspend and bubbles up; only a plain timeout falls through to suspend.
         match self.interruptible_sleep(SUSPEND_ABORT_WINDOW_SECS, shutdown, pwr_baseline) {
             WakeReason::Timer => {}
@@ -245,7 +246,7 @@ impl Device {
 
     /// Called once at least one power-button press is known, this watches for further
     /// presses and reports [`WakeReason::PowerButtonExit`] once the count reaches
-    /// [`EXIT_PRESS_COUNT`], or [`WakeReason::PowerButtonRefresh`] for a lone press.
+    /// [`EXIT_PRESS_COUNT`], or [`WakeReason::PowerButtonCycleImage`] for a lone press.
     ///
     /// The window is a rolling [`WAKE_SETTLE_SECS`] of quiet: each additional press resets
     /// it, so a deliberate multi-press has time to land rather than needing every press
@@ -253,7 +254,7 @@ impl Device {
     fn classify_button_wake(self, shutdown: &AtomicBool, pwr_baseline: Option<u64>) -> WakeReason {
         // Without a baseline we can't count deltas; treat the wake as a single press.
         let Some(base) = pwr_baseline else {
-            return WakeReason::PowerButtonRefresh;
+            return WakeReason::PowerButtonCycleImage;
         };
         let mut last_delta = 0u64;
         let mut quiet = WAKE_SETTLE_SECS;
@@ -273,7 +274,7 @@ impl Device {
                 quiet = WAKE_SETTLE_SECS;
             }
             if quiet == 0 {
-                return WakeReason::PowerButtonRefresh;
+                return WakeReason::PowerButtonCycleImage;
             }
             let chunk = quiet.min(POLL_INTERVAL_SECS);
             std::thread::sleep(Duration::from_secs(chunk));
