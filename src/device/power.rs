@@ -31,14 +31,25 @@ const SUSPEND_ABORT_WINDOW_SECS: u64 = 10;
 const MIN_ACTUAL_SUSPEND_SECS: i64 = 30;
 /// Poll cadence for the shutdown flag and power-button count during awake sleeps.
 const POLL_INTERVAL_SECS: u64 = 1;
+/// After the first power-button press is seen, keep watching this long for more presses
+/// before deciding refresh-vs-exit. The waking press is counted before the CPU is fully
+/// up, so this window is what lets a deliberate double-press register as two.
+const WAKE_SETTLE_SECS: u64 = 2;
+/// Number of power-button presses that means "exit to Home". Fewer than this (i.e. a
+/// single press) means "refresh now" instead.
+const EXIT_PRESS_COUNT: u64 = 3;
 
 /// Why a [`Device::suspend_for`] wait ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeReason {
     /// The requested time elapsed (RTC alarm fired, or an awake sleep ran out).
     Timer,
-    /// The physical power button was pressed.
-    PowerButton,
+    /// A single power-button press: wake and re-render now, but keep the loop running.
+    /// Treated like [`WakeReason::Timer`] by the loop, but distinct so the pre-suspend
+    /// abort window can tell "user wants a refresh" from "the window simply elapsed".
+    PowerButtonRefresh,
+    /// The power button was pressed at least [`EXIT_PRESS_COUNT`] times: exit to Home.
+    PowerButtonExit,
     /// SIGINT/SIGTERM set the shutdown flag.
     Signal,
 }
@@ -96,12 +107,14 @@ impl Device {
     ///   awake and sleep it off, honoring the shutdown flag and the power button.
     ///   Non-positive `secs` (a refresh slot that passed while servicing the previous
     ///   frame) returns [`WakeReason::Timer`] immediately so the caller re-plans.
-    /// - Otherwise: stay awake for [`SUSPEND_ABORT_WINDOW_SECS`] first, then arm the RTC
-    ///   and suspend. The wake instant is fixed at entry, so the window doesn't shift
-    ///   the scheduled wakeup. If the window overslept and left at or below
-    ///   [`MIN_ACTUAL_SUSPEND_SECS`] until that instant, the rest is slept off awake
-    ///   instead of suspending. After resuming, the power-button interrupt count tells a
-    ///   button wake from an RTC one (this firmware has no readable wake-reason property).
+    /// - Otherwise: stay awake for [`SUSPEND_ABORT_WINDOW_SECS`] first, then hand off to
+    ///   [`Device::suspend_to_ram`], which makes the final suspend-vs-sleep decision as
+    ///   late as possible (after clearing the RTC) and arms + suspends. The wake instant
+    ///   is fixed at entry, so the window doesn't shift the scheduled wakeup. After
+    ///   resuming, the power-button interrupt count tells a button wake from an RTC one
+    ///   (this firmware has no readable wake-reason property); a lone press reports
+    ///   [`WakeReason::PowerButtonRefresh`] and [`EXIT_PRESS_COUNT`] or more reports
+    ///   [`WakeReason::PowerButtonExit`].
     pub fn suspend_for(
         self,
         secs: i64,
@@ -123,50 +136,44 @@ impl Device {
             return Ok(self.interruptible_sleep(awake_secs, shutdown, pwr_baseline));
         }
 
+        // Awake abort window: a press here (PowerButtonRefresh/Exit) or a signal aborts
+        // the suspend and bubbles up; only a plain timeout falls through to suspend.
         match self.interruptible_sleep(SUSPEND_ABORT_WINDOW_SECS, shutdown, pwr_baseline) {
             WakeReason::Timer => {}
             interrupted => return Ok(interrupted),
         }
 
-        // The abort window sleeps *at least* its duration; re-check what's actually left
-        // so an oversleep can't shrink the arm-to-suspend margin into the lost-alarm race.
-        let remaining = wake_at - chrono::Utc::now().timestamp();
-        if remaining <= MIN_ACTUAL_SUSPEND_SECS {
-            log::info!(
-                "only {remaining}s left after abort window (<= {MIN_ACTUAL_SUSPEND_SECS}s); sleeping awake"
-            );
-            return Ok(self.interruptible_sleep(remaining.max(0) as u64, shutdown, pwr_baseline));
-        }
-
-        log::info!("suspending for {remaining}s");
-        self.suspend_to_ram(wake_at)?;
-
-        // Resumed — a strict increase in the button count across the suspend means the
-        // button woke us; unknown counts (None) count as a timer wake so the loop keeps
-        // running and re-arms the RTC.
-        let pwr_after = self.power_button_irq_count();
-        if matches!((pwr_baseline, pwr_after), (Some(b), Some(a)) if a > b) {
-            return Ok(WakeReason::PowerButton);
-        }
-        Ok(WakeReason::Timer)
+        self.suspend_to_ram(wake_at, shutdown, pwr_baseline)
     }
 
-    /// Arm the RTC to wake the device at the absolute epoch second `wake_at`, then
-    /// suspend to RAM. Blocks until an interrupt (the RTC alarm or the power button)
-    /// resumes the CPU.
+    /// Make the final suspend-vs-sleep decision and carry it out, returning why the wait
+    /// ended.
     ///
-    /// Uses the standard Linux RTC sysfs alarm, clearing any pending alarm first (the
-    /// kernel rejects a new alarm while one is set). All of the device's RTC nodes are
-    /// armed as a hedge; only one needs to succeed.
-    fn suspend_to_ram(self, wake_at: i64) -> Result<()> {
-        let wake_at = wake_at.to_string();
+    /// The RTC nodes are cleared and armed *first*, then the suspend-vs-sleep check runs as
+    /// the very last thing before `echo mem`, so nothing (RTC I/O, logging) sits between it
+    /// and the point of no return: an oversleeping abort window can't shrink the margin into
+    /// the lost-alarm race. Arming before the check is safe because an alarm firing while
+    /// still awake is harmless — only *entering* suspend past the alarm instant is the race.
+    /// If at or below [`MIN_ACTUAL_SUSPEND_SECS`] remains, the rest is slept off awake (the
+    /// armed alarms fire harmlessly and are re-cleared next iteration); otherwise the device
+    /// suspends until the RTC alarm or the power button resumes the CPU, after which the
+    /// button count is classified.
+    fn suspend_to_ram(
+        self,
+        wake_at: i64,
+        shutdown: &AtomicBool,
+        pwr_baseline: Option<u64>,
+    ) -> Result<WakeReason> {
+        // Clear any pending alarm on every node (the kernel rejects a new alarm while one
+        // is set), then arm all nodes as a hedge (only one need succeed) with the fixed
+        // wake instant. Best-effort per node.
+        let wake_at_str = wake_at.to_string();
         let mut armed = 0;
         for path in self.rtc_wakealarm_paths() {
-            // Clear any pending alarm, then arm. Best-effort per node.
             if std::fs::write(path, "0").is_err() {
                 continue;
             }
-            match std::fs::write(path, &wake_at) {
+            match std::fs::write(path, &wake_at_str) {
                 Ok(()) => armed += 1,
                 Err(e) => log::warn!("could not arm RTC alarm at {path}: {e}"),
             }
@@ -175,12 +182,43 @@ impl Device {
             bail!("failed to arm any RTC wake alarm");
         }
 
+        // Log the intended suspend *before* the final time reading, so its flush latency
+        // lands here and never between that reading and `echo mem`.
+        log::info!(
+            "suspending for ~{}s",
+            wake_at - chrono::Utc::now().timestamp()
+        );
+
+        // Final go/no-go, as the very last thing before the point of no return: with the
+        // alarms already armed, nothing (RTC I/O, logging) sits between this check and
+        // `echo mem`. An alarm that fires while we're still awake here is harmless; the race
+        // to avoid is *entering* suspend after the alarm instant, where the one-shot fires
+        // during suspend entry and leaves no wake source. If too little time is left, sleep
+        // it off awake instead — the armed alarms just fire harmlessly and are re-cleared
+        // next iteration.
+        let remaining = wake_at - chrono::Utc::now().timestamp();
+        if remaining <= MIN_ACTUAL_SUSPEND_SECS {
+            log::info!(
+                "only {remaining}s left before suspending (<= {MIN_ACTUAL_SUSPEND_SECS}s); sleeping awake"
+            );
+            return Ok(self.interruptible_sleep(remaining.max(0) as u64, shutdown, pwr_baseline));
+        }
         std::fs::write(POWER_STATE_PATH, "mem")
-            .with_context(|| format!("writing 'mem' to {POWER_STATE_PATH}"))
+            .with_context(|| format!("writing 'mem' to {POWER_STATE_PATH}"))?;
+
+        // Resumed — a button press since baseline means the button woke us; classify a
+        // single vs multi press. Unknown counts (None) count as a timer wake so the loop
+        // keeps running and re-arms the RTC.
+        if button_pressed(pwr_baseline, self.power_button_irq_count()) {
+            Ok(self.classify_button_wake(shutdown, pwr_baseline))
+        } else {
+            Ok(WakeReason::Timer)
+        }
     }
 
     /// Sleep up to `secs` while staying awake, returning early with the cause if the
     /// shutdown flag gets set or the power-button count rises above `pwr_baseline`.
+    /// A press hands off to [`Device::classify_button_wake`] to tell refresh from exit.
     /// An unreadable interrupt count (`None`) disables button detection for the sleep.
     fn interruptible_sleep(
         self,
@@ -193,9 +231,8 @@ impl Device {
             if shutdown.load(Ordering::SeqCst) {
                 return WakeReason::Signal;
             }
-            let pwr_now = self.power_button_irq_count();
-            if matches!((pwr_baseline, pwr_now), (Some(b), Some(n)) if n > b) {
-                return WakeReason::PowerButton;
+            if button_pressed(pwr_baseline, self.power_button_irq_count()) {
+                return self.classify_button_wake(shutdown, pwr_baseline);
             }
             if remaining == 0 {
                 return WakeReason::Timer;
@@ -206,6 +243,44 @@ impl Device {
         }
     }
 
+    /// Called once at least one power-button press is known, this watches for further
+    /// presses and reports [`WakeReason::PowerButtonExit`] once the count reaches
+    /// [`EXIT_PRESS_COUNT`], or [`WakeReason::PowerButtonRefresh`] for a lone press.
+    ///
+    /// The window is a rolling [`WAKE_SETTLE_SECS`] of quiet: each additional press resets
+    /// it, so a deliberate multi-press has time to land rather than needing every press
+    /// inside one fixed window. A shutdown signal during the wait wins.
+    fn classify_button_wake(self, shutdown: &AtomicBool, pwr_baseline: Option<u64>) -> WakeReason {
+        // Without a baseline we can't count deltas; treat the wake as a single press.
+        let Some(base) = pwr_baseline else {
+            return WakeReason::PowerButtonRefresh;
+        };
+        let mut last_delta = 0u64;
+        let mut quiet = WAKE_SETTLE_SECS;
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return WakeReason::Signal;
+            }
+            let delta = self
+                .power_button_irq_count()
+                .map_or(last_delta, |n| n.saturating_sub(base));
+            if delta >= EXIT_PRESS_COUNT {
+                return WakeReason::PowerButtonExit;
+            }
+            if delta > last_delta {
+                // A new press landed; give it another full window of quiet.
+                last_delta = delta;
+                quiet = WAKE_SETTLE_SECS;
+            }
+            if quiet == 0 {
+                return WakeReason::PowerButtonRefresh;
+            }
+            let chunk = quiet.min(POLL_INTERVAL_SECS);
+            std::thread::sleep(Duration::from_secs(chunk));
+            quiet -= chunk;
+        }
+    }
+
     /// Current cumulative count of power-button-press interrupts, from `/proc/interrupts`.
     /// This firmware exposes no readable powerd wake-reason property, so we compare this
     /// count across a suspend (or an awake sleep) to detect a button press.
@@ -213,6 +288,13 @@ impl Device {
         let interrupts = std::fs::read_to_string("/proc/interrupts").ok()?;
         parse_irq_count(&interrupts, POWER_BUTTON_IRQ_LABEL)
     }
+}
+
+/// Whether the power button was pressed since `baseline`: a strictly higher current count.
+/// An unreadable count on either side (`None`) means "no press detected" — the single
+/// definition of a press, shared by the resume and awake-sleep paths.
+fn button_pressed(baseline: Option<u64>, now: Option<u64>) -> bool {
+    matches!((baseline, now), (Some(b), Some(n)) if n > b)
 }
 
 /// Sum the per-CPU counts for the interrupt whose name matches `label` in the contents of
@@ -249,6 +331,16 @@ mod tests {
     #[test]
     fn missing_label_is_none() {
         assert_eq!(parse_irq_count(IRQ_LINE, "max77696-rtc"), None);
+    }
+
+    #[test]
+    fn button_pressed_only_on_strict_increase_with_known_counts() {
+        assert!(button_pressed(Some(3), Some(4)));
+        assert!(!button_pressed(Some(3), Some(3)));
+        assert!(!button_pressed(Some(4), Some(3)));
+        // An unreadable count on either side never counts as a press.
+        assert!(!button_pressed(None, Some(4)));
+        assert!(!button_pressed(Some(3), None));
     }
 
     #[test]

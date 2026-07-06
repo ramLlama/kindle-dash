@@ -6,8 +6,9 @@ Turns a jailbroken Kindle Voyage into an energy-efficient wall dashboard.
 
 A single self-contained Rust binary that runs on the Kindle. It periodically fetches a
 dashboard image over HTTP(S), renders it to the e-ink display, and suspends the device to
-RAM (very power efficient) until the next scheduled update. Pressing the physical **power
-button** breaks the loop and returns you to the normal Kindle Home UI.
+RAM (very power efficient) until the next scheduled update. A single **power button** press
+wakes it for an immediate refresh; pressing it three times in a row breaks the loop and
+returns you to the normal Kindle Home UI.
 
 This code does **not** render the dashboard itself. Produce the image however you like
 (any tool that can output a grayscale PNG) and serve it over HTTP(S). Rendering elsewhere
@@ -51,7 +52,8 @@ folder holding two install trees:
    `cp /kindle-mount/kindle-dash/config.toml.example /kindle-mount/kindle-dash/config.toml`
 4. Launch it from KUAL: open KUAL and tap **Kindle Dashboard**.
 
-To stop: **press the power button** (returns to Home), or `kill` the process over SSH.
+To force an immediate refresh: **press the power button once**. To stop: **press the power
+button three times** in a row (returns to Home), or `kill` the process over SSH.
 
 > **Note:** the Kindle will not suspend while a USB cable is connected. The write to
 > `/sys/power/state` returns `EBUSY` until the cable is unplugged, so real suspend only
@@ -81,8 +83,8 @@ threshold, Wi-Fi timeout, and log destination.
    refreshes to clear e-ink ghosting.
 3. It arms the RTC wake alarm and suspends to RAM (`/sys/power/state`).
 4. On wake it checks the power-button interrupt count in `/proc/interrupts`. An RTC wake
-   loops again. A **power-button** wake exits cleanly, restoring the framework and
-   returning Home.
+   loops again. A single power-button press re-renders immediately and keeps looping; three
+   presses in a row exit cleanly, restoring the framework and returning Home.
 
 All logging goes through a configurable sink (a file by default), and a panic hook keeps
 panic output off the console too, so nothing is ever left on stdout/stderr, which on the

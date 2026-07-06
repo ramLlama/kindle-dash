@@ -21,10 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Power-button escape hatch:** pressing the power button breaks the loop, restarts the
-  UI framework, and returns to the Kindle Home UI. `SIGTERM`/`SIGINT` do the same. The
-  wake source is detected by comparing the `max77696-onkey_press` count in
-  `/proc/interrupts` across the suspend (this firmware exposes no wake-reason property).
+- **Power-button controls:** a single press wakes the device for an immediate refresh and
+  keeps the loop running; three presses in a row break the loop, restart the UI framework,
+  and return to the Kindle Home UI. `SIGTERM`/`SIGINT` also exit. Presses are counted via
+  the `max77696-onkey_press` count in `/proc/interrupts` (this firmware exposes no
+  wake-reason property), with a rolling settle window so a deliberate multi-press registers.
 - **Kindle Voyage support**, verified on-device: serial via `com.lab126.system usid`
   (falling back to `/proc/cpuinfo`), battery via `com.lab126.powerd battLevel`, UI via the
   `framework` upstart job, and RTC wake via both `rtc0`/`rtc1` `wakealarm` nodes.

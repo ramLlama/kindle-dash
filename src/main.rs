@@ -1,6 +1,7 @@
 //! Low-power Kindle Voyage dashboard: fetch a PNG over HTTPS, render it to the e-ink
-//! display via `eips`, and suspend to RAM between refreshes. The physical power button
-//! breaks the loop and returns to the native Kindle Home UI.
+//! display via `eips`, and suspend to RAM between refreshes. A single power-button press
+//! wakes the device for an immediate refresh; pressing it several times in a row breaks
+//! the loop and returns to the native Kindle Home UI.
 
 mod config;
 mod device;
@@ -219,8 +220,10 @@ fn main_loop(
         };
         match device.suspend_for(sleep_secs, debug, shutdown) {
             Ok(WakeReason::Timer) => log::info!("woke via timer"),
-            Ok(WakeReason::PowerButton) => {
-                log::info!("woke via power button");
+            // A single press just wakes to re-render; loop around and refresh now.
+            Ok(WakeReason::PowerButtonRefresh) => log::info!("woke via power button: refreshing"),
+            Ok(WakeReason::PowerButtonExit) => {
+                log::info!("woke via power button: exiting");
                 return ExitReason::PowerButton;
             }
             Ok(WakeReason::Signal) => return ExitReason::Signal,

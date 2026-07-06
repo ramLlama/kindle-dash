@@ -5,8 +5,9 @@
 `kindle-dash` turns a jailbroken **Kindle Voyage** into a low-power e-ink dashboard. A single
 static Rust binary wakes on a cron schedule, fetches a pre-rendered grayscale PNG (over HTTPS or
 from a local `file://` path), draws it to the e-ink panel via the device's `eips` tool, then
-suspends the device to RAM until the next scheduled refresh. Pressing the physical **power
-button** breaks the loop and returns to the native Kindle Home UI.
+suspends the device to RAM until the next scheduled refresh. A single **power button** press
+wakes the device for an immediate refresh; pressing it several times in a row breaks the loop and
+returns to the native Kindle Home UI.
 
 This is a from-scratch Rust rewrite of an earlier project that was a collection of POSIX shell
 scripts plus a standalone `next-wakeup` helper and a bundled `xh` HTTP client. All of that is
@@ -61,9 +62,15 @@ config.toml.example  Documented config template.
   after any long sleep is forced full.
 - **Wake-source detection**: there is no readable powerd wake-reason property on this firmware.
   `suspend_for` snapshots the `max77696-onkey_press` interrupt count from `/proc/interrupts` at
-  entry and compares it after resuming; a strict increase means the power button woke us (→ exit to
-  Home), otherwise it was the RTC alarm (→ keep looping). During awake sleeps it polls the same
-  count every second, so a button press interrupts those too, not just real suspends.
+  entry and compares it after resuming; a strict increase means the power button woke us, otherwise
+  it was the RTC alarm (→ keep looping). During awake sleeps it polls the same count every second,
+  so a button press interrupts those too, not just real suspends.
+- **Power-button semantics**: once a press is seen (on resume *or* during an awake sleep),
+  `classify_button_wake` watches for more with a rolling `WAKE_SETTLE_SECS` (2s) window that each
+  new press resets. A single press → `WakeReason::PowerButtonRefresh` (loop re-renders now, like a
+  timer wake); reaching `EXIT_PRESS_COUNT` (3) presses → `WakeReason::PowerButtonExit` (return to
+  Home). The pre-suspend abort window and awake sleeps share this via `interruptible_sleep`, so the
+  semantics are identical everywhere: one press refreshes, three exit.
 - **DeviceRestore RAII guard**: engaging it stops the UI `framework`, sets the CPU governor to
   `powersave`, and suppresses the screensaver. Its `Drop` restores the governor, restarts
   `framework`, waits 5s, and launches Home. See gotcha below on why this must run.
@@ -79,10 +86,12 @@ only in these terms. Adding a new Kindle model means adding an `enum` variant an
 not touching business logic.
 
 `suspend_for(secs: i64, sleep_only: bool, shutdown: &AtomicBool) -> Result<WakeReason>` is the
-single sleep/suspend entrypoint for the loop — it owns the awake abort window, the awake-vs-suspend
-decision, and wake-source detection, returning `WakeReason { Timer, PowerButton, Signal }` (a `pub`
-enum re-exported from `device/mod.rs`) so the loop knows why the wait ended. Power-button IRQ
-counting is now a private detail of `power.rs`, not part of the `Device` API.
+single sleep/suspend entrypoint for the loop — it owns the awake abort window and delegates the
+final suspend-vs-sleep decision plus the suspend itself to the private `suspend_to_ram` (which
+makes that decision as late as possible, after clearing the RTC, right before `echo mem`). It
+returns `WakeReason { Timer, PowerButtonRefresh, PowerButtonExit, Signal }` (a `pub` enum
+re-exported from `device/mod.rs`) so the loop knows why the wait ended. Power-button IRQ counting
+and classification are private details of `power.rs`, not part of the `Device` API.
 
 **Voyage is the only supported model.** Detection (`device::detect`) reads the serial and matches
 it against an allowlist of Voyage device codes; anything else hard-errors *before* any device
@@ -166,8 +175,12 @@ uses `dynamic="false"`.
   closes this by construction: waits below `MIN_SUSPEND_SECS` (45s) stay awake instead of
   suspending, and real suspends fix the wake instant at entry then burn a 10s awake abort window
   first, nominally leaving ~35s. Because sleeps are *at least* their duration, the window can
-  oversleep; the remaining time is re-checked after it, and at or below `MIN_ACTUAL_SUSPEND_SECS`
-  (30s) left means the rest is slept off awake instead of suspending.
+  oversleep; `suspend_to_ram` makes the final call as late as possible — it clears and arms the
+  RTC nodes *first*, then re-derives the time left to the fixed wake instant as the very last thing
+  before `echo mem`, so nothing sits between that check and the suspend. Arming before the check is
+  safe: an alarm that fires while still awake is harmless — the race is only *entering* suspend
+  past the alarm instant. At or below `MIN_ACTUAL_SUSPEND_SECS` (30s) left, the rest is slept off
+  awake instead of suspending.
 - **Never emit to stdout/stderr on-device** — it corrupts the e-ink framebuffer. The `stdout`/
   `stderr` log sinks are for host or over-SSH debugging only.
 - **`/tmp` is a RAM-backed tmpfs** (`/var`, 64 MB) that survives suspend-to-RAM; it's the default
